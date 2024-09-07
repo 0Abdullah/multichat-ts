@@ -40,14 +40,17 @@ kick_chat.on('message', (message) => {
 
 ```svelte
 <script lang="ts">
-	import { TwitchIRC, type Message, KickPusher } from 'multichat-ts';
+	import { TwitchIRC, type Message } from 'multichat-ts';
 
 	let messages: Message[] = $state([]);
 
 	const twitch_chat = new TwitchIRC();
+	$effect(() => {
+		twitch_chat.connect({
+			channelName: 'piratesoftware'
+		});
 
-	twitch_chat.connect({
-		channelName: 'piratesoftware'
+		return () => twitch_chat.disconnect();
 	});
 
 	twitch_chat.on('message', (message) => {
