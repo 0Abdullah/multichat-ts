@@ -1,5 +1,5 @@
-export * from './kick';
-export * from './twitch';
+export * from './kick.js';
+export * from './twitch.js';
 
 export type Message = {
 	body: BodyComponent[];

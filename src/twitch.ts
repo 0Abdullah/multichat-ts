@@ -8,7 +8,7 @@ import {
 	type Event,
 	type EmoteURLsByName,
 	type BadgeURLsBySetIDAndVersionID,
-} from './index';
+} from './index.js';
 
 const ANONYMOUS_IRC_PASS = 'SCHMOOPIIE';
 const ANONYMOUS_IRC_LOGIN = 'justinfan1234';

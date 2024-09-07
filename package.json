@@ -2,7 +2,7 @@
   "name": "multichat-ts",
   "version": "0.0.1",
   "type": "module",
-  "description": "Receive real-time events for chat-related messages and events on multiple platforms (Twitch, Kick)",
+  "description": "Receive type-safe realtime events for chat-related messages on multiple platforms (Twitch, Kick)",
   "repository": {
     "type": "git",
     "url": "https://github.com/0Abdullah/multichat-ts.git"

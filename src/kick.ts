@@ -5,7 +5,7 @@ import {
 	type BodyComponent,
 	type EmoteURLsByName,
 	type Message,
-} from './index';
+} from './index.js';
 
 type EventCallbackFunctions = {
 	message: (data: Message) => unknown;
