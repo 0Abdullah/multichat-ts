@@ -16,7 +16,7 @@
 	"scripts": {
 		"build": "tsc",
 		"prepublishOnly": "pnpm build",
-		"publish": "npm publish --access public",
+		"pub": "npm publish --access public",
 		"lint": "eslint .",
 		"lint:fix": "eslint . --fix",
 		"format": "prettier --check src",
