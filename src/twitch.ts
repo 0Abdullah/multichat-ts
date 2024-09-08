@@ -7,7 +7,7 @@ import {
 	type Message,
 	type Event,
 	type EmoteURLsByName,
-	type BadgeURLsBySetIDAndVersionID,
+	type BadgeURLsBySetIDAndVersionIDOrAny,
 } from './index.js';
 
 const ANONYMOUS_IRC_PASS = 'SCHMOOPIIE';
@@ -28,7 +28,7 @@ export class TwitchIRC {
 	public channel_name?: string;
 	public assets: {
 		external_emotes: EmoteURLsByName;
-		badges: BadgeURLsBySetIDAndVersionID;
+		badges: BadgeURLsBySetIDAndVersionIDOrAny;
 	} = {
 		external_emotes: {},
 		badges: {},
@@ -44,6 +44,11 @@ export class TwitchIRC {
 	private public_listeners: Partial<EventCallbackFunctions> = {};
 
 	public socket?: WebSocket;
+	public ws?: WebSocket | undefined;
+
+	constructor(ws?: WebSocket) {
+		this.ws = ws;
+	}
 
 	public connect(channel?: { channelName?: string }) {
 		if (channel?.channelName) this.channel_name = channel.channelName;
@@ -53,17 +58,12 @@ export class TwitchIRC {
 
 		this.socket?.close();
 
-		this.socket = new WebSocket('wss://irc-ws.chat.twitch.tv');
+		this.socket = new WebSocket('wss://irc-ws.chat.twitch.tv', null, {
+			WebSocket: this.ws,
+		});
 		this.socket.onopen = () => this.onOpen();
 		this.socket.onclose = () => this.onClose();
 		this.socket.onmessage = (event) => this.onMessage(event);
-
-		console.log(
-			parseIRCLine(
-				// eslint-disable-next-line no-useless-escape
-				`@badge-info=;badges=turbo/1;color=#9ACD32;display-name=TestChannel;emotes=;id=3d830f12-795c-447d-af3c-ea05e40fbddb;login=testchannel;mod=0;msg-id=raid;msg-param-displayName=TestChannel;msg-param-login=testchannel;msg-param-viewerCount=15;room-id=33332222;subscriber=0;system-msg=15\sraiders\sfrom\sTestChannel\shave\sjoined\n!;tmi-sent-ts=1507246572675;turbo=1;user-id=123456;user-type= :tmi.twitch.tv USERNOTICE #othertestchannel`,
-			),
-		);
 	}
 
 	public disconnect() {
@@ -244,7 +244,8 @@ export class TwitchIRC {
 									const [set_id, version] = badge.split('/');
 									if (!set_id || !version) return [];
 
-									const url = this.assets.badges[set_id]?.[version];
+									const url =
+										this.assets.badges[set_id]?.[version] ?? this.assets.badges[set_id]?.['*'];
 									if (!url) return [];
 
 									return {
@@ -255,7 +256,7 @@ export class TwitchIRC {
 								}) ?? [],
 							color: tags.color ?? '#FFFFFF',
 							id: tags['user-id'],
-							username: 'IDK',
+							username: (tags['display-name'] ?? 'Unknown').toLowerCase(),
 							display_name: tags['display-name'] ?? 'Unknown',
 							roles: {},
 						},

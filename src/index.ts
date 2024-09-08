@@ -155,10 +155,10 @@ export type BadgeURLsByNameOrCount = {
 		  };
 };
 
-export type BadgeURLsBySetIDAndVersionID = {
-	[badge_set_id: string]: {
-		[badge_version_id: string]: string;
-	};
+type StringOrAny = '*' | (string & Record<never, never>);
+
+export type BadgeURLsBySetIDAndVersionIDOrAny = {
+	[badge_set_id: string]: Record<StringOrAny, string>;
 };
 
 export type EmoteURLsByName = {
