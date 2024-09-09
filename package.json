@@ -1,6 +1,6 @@
 {
 	"name": "multichat-ts",
-	"version": "0.0.4",
+	"version": "0.0.5",
 	"type": "module",
 	"description": "Receive type-safe realtime events for chat-related messages on multiple platforms (Twitch, Kick)",
 	"repository": {
