@@ -324,6 +324,15 @@ function parseIRCLine(line: string): IRC_Message {
 		}
 	}
 
+	// TODO: handle message actions like "/me"
+	if (params[0])
+		params[0] = String.raw`${params[0]}`.replaceAll(
+			new RegExp(`\\\\.+ACTION (.*)\\\\.+`, 'g'),
+			function (_original, text_only) {
+				return text_only;
+			},
+		);
+
 	const tags = raw_tags_component ? parseTags(raw_tags_component, command) : undefined;
 
 	return {
