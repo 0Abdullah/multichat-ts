@@ -136,7 +136,7 @@ export class TwitchIRC {
 
 	private onMessage(event: MessageEvent) {
 		if (!event.data) return;
-		const lines = String(event.data).trim().split('\r\n');
+		const lines = (event.data as string).trim().split('\r\n');
 		const messages = lines.map(parseIRCLine);
 		messages.forEach((message) => {
 			this.public_listeners.raw_message?.(message);
@@ -327,10 +327,8 @@ function parseIRCLine(line: string): IRC_Message {
 	// TODO: handle message actions like "/me"
 	if (params[0])
 		params[0] = String.raw`${params[0]}`.replaceAll(
-			new RegExp(`\\\\.+ACTION (.*)\\\\.+`, 'g'),
-			function (_original, text_only) {
-				return text_only;
-			},
+			/.+ACTION (.*).+/g,
+			(_original, group) => group,
 		);
 
 	const tags = raw_tags_component ? parseTags(raw_tags_component, command) : undefined;
