@@ -8,7 +8,8 @@ import {
 } from './index.js';
 
 type EventCallbackFunctions = {
-	message: (data: Message) => unknown;
+	message: (message: Message) => unknown;
+	raw_message: (message: ChatMessageEvent) => unknown;
 };
 
 type EventNames = keyof EventCallbackFunctions;
@@ -109,8 +110,7 @@ export class KickPusher {
 	}
 
 	private onChatMessage(data: ChatMessageEvent) {
-		console.log('onMessage', data);
-
+		this.public_listeners.raw_message?.(data);
 		const text = data.content;
 		const emote_matches = [...data.content.matchAll(/\[emote:\d+:[a-zA-Z0-9]*\]/g)];
 		console.log(emote_matches);

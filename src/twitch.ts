@@ -16,10 +16,11 @@ const PING_INTERVAL_MS = 30_000;
 const PING_TIMEOUT_MS = 10_000;
 
 type EventCallbackFunctions = {
-	message: (data: Message) => unknown;
+	message: (message: Message) => unknown;
 	clear_messages: (data: ClearMessages) => unknown;
 	delete_message: (data: DeleteMessage) => unknown;
-	event: (data: Event) => unknown;
+	event: (event: Event) => unknown;
+	raw_message: (message: IRC_Message) => unknown;
 };
 
 type EventNames = keyof EventCallbackFunctions;
@@ -122,6 +123,7 @@ export class TwitchIRC {
 		const lines = String(event.data).trim().split('\r\n');
 		const messages = lines.map(parseIRCLine);
 		messages.forEach((message) => {
+			this.public_listeners.raw_message?.(message);
 			switch (message.command) {
 				case 'PONG': {
 					if (!this.ping.lastSentTimestamp) return console.error('got PONG without sending PING');
