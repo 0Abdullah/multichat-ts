@@ -7,7 +7,7 @@ import {
 	type Message,
 	type Event,
 	type EmoteURLsByName,
-	type BadgeURLsBySetIDAndVersionIDOrAny,
+	type BadgeURLsBySetIDOrSetIDAndVersion,
 } from './index.js';
 
 const ANONYMOUS_IRC_PASS = 'SCHMOOPIIE';
@@ -27,9 +27,9 @@ type EventNames = keyof EventCallbackFunctions;
 
 export class TwitchIRC {
 	public channel_name?: string;
-	public assets: {
+	private assets: {
 		external_emotes: EmoteURLsByName;
-		badges: BadgeURLsBySetIDAndVersionIDOrAny;
+		badges: BadgeURLsBySetIDOrSetIDAndVersion;
 	} = {
 		external_emotes: {},
 		badges: {},
@@ -49,6 +49,22 @@ export class TwitchIRC {
 
 	constructor(ws?: WebSocket) {
 		this.ws = ws;
+	}
+
+	public setBadges(badges: BadgeURLsBySetIDOrSetIDAndVersion) {
+		this.assets.badges = { ...badges, ...this.assets.badges };
+	}
+
+	public setExternalEmotes(external_emotes: EmoteURLsByName) {
+		this.assets.external_emotes = { ...external_emotes, ...this.assets.external_emotes };
+	}
+
+	public getStoredBadges() {
+		return this.assets.badges;
+	}
+
+	public getStoredExternalEmotes() {
+		return this.assets.external_emotes;
 	}
 
 	public connect(channel?: { channelName?: string }) {
@@ -246,8 +262,10 @@ export class TwitchIRC {
 									const [set_id, version] = badge.split('/');
 									if (!set_id || !version) return [];
 
-									const url =
-										this.assets.badges[set_id]?.[version] ?? this.assets.badges[set_id]?.['*'];
+									const storedBadge = this.assets.badges[set_id];
+									if (!storedBadge) return [];
+
+									const url = typeof storedBadge === 'object' ? storedBadge[version] : storedBadge;
 									if (!url) return [];
 
 									return {

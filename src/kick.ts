@@ -19,7 +19,7 @@ const DEFAULT_KICK_PUSHER_KEY = '32cbd69e4b950bf97679';
 export class KickPusher {
 	public kick_pusher_key = DEFAULT_KICK_PUSHER_KEY;
 	public channel_name?: string;
-	public assets: {
+	private assets: {
 		external_emotes: EmoteURLsByName;
 		badges: BadgeURLsByNameOrCount;
 	} = {
@@ -46,6 +46,22 @@ export class KickPusher {
 
 	public socket?: Pusher;
 	public isConnected = false;
+
+	public setBadges(badges: BadgeURLsByNameOrCount) {
+		this.assets.badges = { ...badges, ...this.assets.badges };
+	}
+
+	public setExternalEmotes(external_emotes: EmoteURLsByName) {
+		this.assets.external_emotes = { ...external_emotes, ...this.assets.external_emotes };
+	}
+
+	public getStoredBadges() {
+		return this.assets.badges;
+	}
+
+	public getStoredExternalEmotes() {
+		return this.assets.external_emotes;
+	}
 
 	public async connect(channel?: { channelName?: string }) {
 		if (channel?.channelName) this.channel_name = channel.channelName;
