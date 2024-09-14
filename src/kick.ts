@@ -50,11 +50,11 @@ export class KickPusher {
 	public isConnected = false;
 
 	public setBadges(badges: BadgeURLsByNameOrCount) {
-		this.assets.badges = { ...badges, ...this.assets.badges };
+		this.assets.badges = { ...this.assets.badges, ...badges };
 	}
 
 	public setExternalEmotes(external_emotes: EmoteURLsByName) {
-		this.assets.external_emotes = { ...external_emotes, ...this.assets.external_emotes };
+		this.assets.external_emotes = { ...this.assets.external_emotes, ...external_emotes };
 	}
 
 	public getStoredBadges() {
