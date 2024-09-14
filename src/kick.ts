@@ -9,6 +9,8 @@ import {
 
 type EventCallbackFunctions = {
 	message: (message: Message) => unknown;
+	subscription: (data: ChatSubscriptionEvent) => unknown;
+	gifted: (data: ChatGiftedEvent) => unknown;
 	raw_message: (message: ChatMessageEvent) => unknown;
 };
 
@@ -106,7 +108,13 @@ export class KickPusher {
 		this.socket
 			.subscribe(`chatrooms.${channel_response.chatroom.id}.v2`)
 			.bind('pusher:subscription_succeeded', () => this.onSubscriptionSuccess())
-			.bind('App\\Events\\ChatMessageEvent', (data: ChatMessageEvent) => this.onChatMessage(data));
+			.bind('App\\Events\\ChatMessageEvent', (data: ChatMessageEvent) => this.onChatMessage(data))
+			.bind('App\\Events\\SubscriptionEvent', (data: ChatSubscriptionEvent) =>
+				this.onChatSubscription(data),
+			)
+			.bind('App\\Events\\GiftedSubscriptionsEvent', (data: ChatGiftedEvent) =>
+				this.onChatGifted(data),
+			);
 	}
 
 	public disconnect() {
@@ -123,6 +131,14 @@ export class KickPusher {
 
 	private onSubscriptionSuccess() {
 		console.log(`Connected to Kick Pusher (${this.channel_name})`);
+	}
+
+	private onChatSubscription(data: ChatSubscriptionEvent) {
+		this.public_listeners.subscription?.(data);
+	}
+
+	private onChatGifted(data: ChatGiftedEvent) {
+		this.public_listeners.gifted?.(data);
 	}
 
 	private onChatMessage(data: ChatMessageEvent) {
@@ -380,4 +396,16 @@ interface ChatMessageEvent {
 			}>;
 		};
 	};
+}
+
+interface ChatSubscriptionEvent {
+	chatroom_id: string;
+	username: string;
+	months: number;
+}
+
+interface ChatGiftedEvent {
+	chatroom_id: string;
+	gifted_usernames: string[];
+	gifter_username: string;
 }
