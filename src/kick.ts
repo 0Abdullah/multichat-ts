@@ -245,7 +245,7 @@ export class KickPusher {
 	}
 }
 
-interface GetChannelResponse {
+export interface GetChannelResponse {
 	id: number;
 	user_id: number;
 	slug: string;
@@ -325,7 +325,7 @@ interface GetChannelResponse {
 	}>;
 }
 
-interface ChannelLivestream {
+export interface ChannelLivestream {
 	id: number;
 	slug: string;
 	channel_id: number;
@@ -361,7 +361,7 @@ interface ChannelLivestream {
 	}>;
 	tags: unknown[];
 }
-interface ChannelChatroom {
+export interface ChannelChatroom {
 	id: number;
 	chatable_type: string;
 	channel_id: string;
@@ -377,7 +377,7 @@ interface ChannelChatroom {
 	message_interval: number;
 	following_min_duration: number;
 }
-interface ChatMessageEvent {
+export interface ChatMessageEvent {
 	id: string;
 	chatroom_id: number;
 	content: string;
@@ -398,13 +398,13 @@ interface ChatMessageEvent {
 	};
 }
 
-interface ChatSubscriptionEvent {
+export interface ChatSubscriptionEvent {
 	chatroom_id: string;
 	username: string;
 	months: number;
 }
 
-interface ChatGiftedEvent {
+export interface ChatGiftedEvent {
 	chatroom_id: string;
 	gifted_usernames: string[];
 	gifter_username: string;
