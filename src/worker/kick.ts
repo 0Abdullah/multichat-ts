@@ -71,7 +71,13 @@ export class KickPusher {
 
 		console.log(`connecting to ${this.channel_name}...`);
 
-		const channel_response = await fetch(`https://kick.com/api/v2/channels/${this.channel_name}`)
+		const channel_response = await fetch(`https://kick.com/api/v2/channels/${this.channel_name}`, {
+			headers: {
+				accept: 'aplication/json',
+				'user-agent':
+					'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+			},
+		})
 			.then((res) => res.json())
 			.then((json) => json as GetChannelResponse | undefined);
 
