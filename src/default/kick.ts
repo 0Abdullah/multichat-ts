@@ -65,15 +65,28 @@ export class KickPusher {
 		return this.assets.external_emotes;
 	}
 
-	public async connect(channel?: { channelName?: string }) {
+	public async connect(
+		channel?: { channelName?: string },
+		get_channel: (channelName: string) => Promise<GetChannelResponse | undefined> = async (
+			channelName,
+		) => {
+			const res = await fetch(`https://kick.com/api/v2/channels/${channelName}`, {
+				headers: {
+					accept: 'aplication/json',
+					'user-agent':
+						'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+				},
+			});
+			const json = await res.json();
+			return json as GetChannelResponse | undefined;
+		},
+	) {
 		if (channel?.channelName) this.channel_name = channel.channelName;
 		if (!this.channel_name) return console.error('channel_name not specified');
 
 		console.log(`connecting to ${this.channel_name}...`);
 
-		const channel_response = await fetch(`https://kick.com/api/v2/channels/${this.channel_name}`)
-			.then((res) => res.json())
-			.then((json) => json as GetChannelResponse | undefined);
+		const channel_response = await get_channel(this.channel_name);
 
 		if (!channel_response) return console.error('Failed to connect to Kick.com chat');
 
@@ -89,7 +102,6 @@ export class KickPusher {
 		this.socket = new Pusher(this.kick_pusher_key, {
 			cluster: 'us2',
 		});
-
 		/*
 		| 'App\\Events\\ChatMessageEvent'
 		| 'App\\Events\\ChatroomClearEvent'
@@ -115,6 +127,14 @@ export class KickPusher {
 			.bind('App\\Events\\GiftedSubscriptionsEvent', (data: ChatGiftedEvent) =>
 				this.onChatGifted(data),
 			);
+
+		/*
+			{"event":"App\\Events\\ChatMessageSentEvent","data":"{\"message\":{\"id\":\"e676ab50-d59c-43ae-b7cd-2b60c5b89c08\",\"message\":null,\"type\":\"info\",\"replied_to\":null,\"is_info\":null,\"link_preview\":null,\"chatroom_id\":5755510,\"role\":\"user\",\"created_at\":1736022879,\"action\":\"gift\",\"optional_message\":null,\"months_subscribed\":null,\"subscriptions_count\":5,\"giftedUsers\":[{\"username\":\"lovesxb1\",\"monthsSubscribed\":1},{\"username\":\"O7no\",\"monthsSubscribed\":1},{\"username\":\"viiRayan\",\"monthsSubscribed\":1},{\"username\":\"Shabib_3005\",\"monthsSubscribed\":1},{\"username\":\"Khadielja\",\"monthsSubscribed\":1}]},\"user\":{\"id\":34844645,\"username\":\"Jana_ai\",\"role\":\"user\",\"isSuperAdmin\":null,\"profile_thumb\":\"https:\\/\\/kick-files-prod.s3.us-west-2.amazonaws.com\\/images\\/user\\/34844645\\/profile_image\\/conversion\\/90b8d01a-acda-4cdb-896b-8ce6d40b6767-thumb.webp?X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAS3MDRZGPDOOAYROR%2F20250104%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20250104T203439Z&X-Amz-SignedHeaders=host&X-Amz-Expires=300&X-Amz-Signature=ac0e479335c68c7be15861e9f78866410d64fa1627fc87433365f110901243c0\",\"verified\":false,\"follower_badges\":[],\"is_subscribed\":null,\"is_founder\":false,\"months_subscribed\":null,\"quantity_gifted\":0}}","channel":"chatrooms.5755510"}
+			*/
+
+		/*
+{"event":"App\\Events\\LuckyUsersWhoGotGiftSubscriptionsEvent","data":"{\"channel\":{\"id\":5789932,\"user_id\":5882384,\"slug\":\"sulaiman\",\"is_banned\":false,\"playback_url\":\"https:\\/\\/fa723fc1b171.us-west-2.playback.live-video.net\\/api\\/video\\/v1\\/us-west-2.196233775518.channel.L29JBfLzKok0.m3u8\",\"name_updated_at\":null,\"vod_enabled\":true,\"subscription_enabled\":true,\"is_affiliate\":false,\"can_host\":true,\"chatroom\":{\"id\":5755510,\"chatable_type\":\"App\\\\Models\\\\Channel\",\"channel_id\":5789932,\"created_at\":\"2023-06-08T08:24:23.000000Z\",\"updated_at\":\"2024-12-11T07:20:32.000000Z\",\"chat_mode_old\":\"public\",\"chat_mode\":\"public\",\"slow_mode\":false,\"chatable_id\":5789932,\"followers_mode\":true,\"subscribers_mode\":false,\"emotes_mode\":false,\"message_interval\":6,\"following_min_duration\":0}},\"usernames\":[\"lovesxb1\",\"O7no\",\"viiRayan\",\"Shabib_3005\",\"Khadielja\"],\"gifter_username\":\"Jana_ai\"}","channel":"channel.5789932"}
+			*/
 	}
 
 	public disconnect() {
@@ -145,7 +165,6 @@ export class KickPusher {
 		this.public_listeners.raw_message?.(data);
 		const text = data.content;
 		const emote_matches = [...data.content.matchAll(/\[emote:\d+:[a-zA-Z0-9]*\]/g)];
-		console.log(emote_matches);
 
 		const body: BodyComponent[] = [];
 
@@ -203,8 +222,7 @@ export class KickPusher {
 		}
 
 		body.sort((a, b) => a.start_inclusive - b.start_inclusive);
-
-		this.public_listeners.message?.({
+		const message: Message = {
 			id: data.id,
 			user: {
 				id: `${data.sender.id}`,
@@ -241,7 +259,16 @@ export class KickPusher {
 			},
 			raw_text: data.content,
 			timestamp_sent: Date.parse(data.created_at),
-		});
+		};
+
+		if (data.type === 'celebration' && data.metadata?.celebration) {
+			message.resubscription = {
+				id: data.metadata.celebration.id,
+				months: data.metadata.celebration.total_months,
+				subscribed_since_timestamp: data.metadata.celebration.created_at,
+			};
+		}
+		this.public_listeners.message?.(message);
 	}
 }
 
@@ -381,8 +408,16 @@ export interface ChatMessageEvent {
 	id: string;
 	chatroom_id: number;
 	content: string;
-	type: string;
+	type: 'message' | 'celebration';
 	created_at: string;
+	metadata?: {
+		celebration: {
+			created_at: string;
+			id: string;
+			total_months: number;
+			type: 'subscription_renewed';
+		};
+	};
 	sender: {
 		id: number;
 		username: string;

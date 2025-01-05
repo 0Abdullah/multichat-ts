@@ -10,6 +10,11 @@ export type Message = {
 	id: string;
 	raw_text: string;
 	timestamp_sent: number;
+	resubscription?: {
+		id: string;
+		months: number;
+		subscribed_since_timestamp: string;
+	};
 	user: {
 		badges: Badge[];
 		color: string;
