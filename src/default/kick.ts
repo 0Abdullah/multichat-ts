@@ -137,19 +137,27 @@ export class KickPusher {
 		this.socket.connection.bind('state_change', (state: ConnectionStateEvent) => {
 			switch (state.current) {
 				case 'connected': {
+					this.isConnected = true;
 					console.log(`Connected to Kick Pusher (${this.channel_name})!`);
 					break;
 				}
 				case 'connecting': {
+					this.isConnected = false;
 					console.log(`Connecting to Kick Pusher (${this.channel_name})...`);
 					break;
 				}
 				case 'failed': {
+					this.isConnected = false;
 					console.log(`Failed to connect to Kick Pusher (${this.channel_name})`);
 					break;
 				}
 				case 'unavailable': {
+					this.isConnected = false;
 					console.log(`Disconnected from Kick Pusher (${this.channel_name})`);
+					break;
+				}
+				default: {
+					this.isConnected = false;
 					break;
 				}
 			}
