@@ -7,11 +7,15 @@ import {
 	type Message,
 } from './index.js';
 
+type ConnectionState = 'initialized' | 'connecting' | 'connected' | 'unavailable' | 'failed';
+type ConnectionStateEvent = { previous: ConnectionState; current: ConnectionState };
+
 type EventCallbackFunctions = {
 	message: (message: Message) => unknown;
 	subscription: (data: ChatSubscriptionEvent) => unknown;
 	gifted: (data: ChatGiftedEvent) => unknown;
 	raw_message: (message: ChatMessageEvent) => unknown;
+	connection_state_changed: (state: ConnectionStateEvent) => unknown;
 };
 
 type EventNames = keyof EventCallbackFunctions;
@@ -119,7 +123,9 @@ export class KickPusher {
 		*/
 		this.socket
 			.subscribe(`chatrooms.${channel_response.chatroom.id}.v2`)
-			.bind('pusher:subscription_succeeded', () => this.onSubscriptionSuccess())
+			.bind('pusher:subscription_succeeded', () =>
+				this.onSubscriptionSuccess('pusher:subscription_succeeded'),
+			)
 			.bind('App\\Events\\ChatMessageEvent', (data: ChatMessageEvent) => this.onChatMessage(data))
 			.bind('App\\Events\\SubscriptionEvent', (data: ChatSubscriptionEvent) =>
 				this.onChatSubscription(data),
@@ -128,13 +134,27 @@ export class KickPusher {
 				this.onChatGifted(data),
 			);
 
-		/*
-			{"event":"App\\Events\\ChatMessageSentEvent","data":"{\"message\":{\"id\":\"e676ab50-d59c-43ae-b7cd-2b60c5b89c08\",\"message\":null,\"type\":\"info\",\"replied_to\":null,\"is_info\":null,\"link_preview\":null,\"chatroom_id\":5755510,\"role\":\"user\",\"created_at\":1736022879,\"action\":\"gift\",\"optional_message\":null,\"months_subscribed\":null,\"subscriptions_count\":5,\"giftedUsers\":[{\"username\":\"lovesxb1\",\"monthsSubscribed\":1},{\"username\":\"O7no\",\"monthsSubscribed\":1},{\"username\":\"viiRayan\",\"monthsSubscribed\":1},{\"username\":\"Shabib_3005\",\"monthsSubscribed\":1},{\"username\":\"Khadielja\",\"monthsSubscribed\":1}]},\"user\":{\"id\":34844645,\"username\":\"Jana_ai\",\"role\":\"user\",\"isSuperAdmin\":null,\"profile_thumb\":\"https:\\/\\/kick-files-prod.s3.us-west-2.amazonaws.com\\/images\\/user\\/34844645\\/profile_image\\/conversion\\/90b8d01a-acda-4cdb-896b-8ce6d40b6767-thumb.webp?X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAS3MDRZGPDOOAYROR%2F20250104%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20250104T203439Z&X-Amz-SignedHeaders=host&X-Amz-Expires=300&X-Amz-Signature=ac0e479335c68c7be15861e9f78866410d64fa1627fc87433365f110901243c0\",\"verified\":false,\"follower_badges\":[],\"is_subscribed\":null,\"is_founder\":false,\"months_subscribed\":null,\"quantity_gifted\":0}}","channel":"chatrooms.5755510"}
-			*/
-
-		/*
-{"event":"App\\Events\\LuckyUsersWhoGotGiftSubscriptionsEvent","data":"{\"channel\":{\"id\":5789932,\"user_id\":5882384,\"slug\":\"sulaiman\",\"is_banned\":false,\"playback_url\":\"https:\\/\\/fa723fc1b171.us-west-2.playback.live-video.net\\/api\\/video\\/v1\\/us-west-2.196233775518.channel.L29JBfLzKok0.m3u8\",\"name_updated_at\":null,\"vod_enabled\":true,\"subscription_enabled\":true,\"is_affiliate\":false,\"can_host\":true,\"chatroom\":{\"id\":5755510,\"chatable_type\":\"App\\\\Models\\\\Channel\",\"channel_id\":5789932,\"created_at\":\"2023-06-08T08:24:23.000000Z\",\"updated_at\":\"2024-12-11T07:20:32.000000Z\",\"chat_mode_old\":\"public\",\"chat_mode\":\"public\",\"slow_mode\":false,\"chatable_id\":5789932,\"followers_mode\":true,\"subscribers_mode\":false,\"emotes_mode\":false,\"message_interval\":6,\"following_min_duration\":0}},\"usernames\":[\"lovesxb1\",\"O7no\",\"viiRayan\",\"Shabib_3005\",\"Khadielja\"],\"gifter_username\":\"Jana_ai\"}","channel":"channel.5789932"}
-			*/
+		this.socket.connection.bind('state_change', (state: ConnectionStateEvent) => {
+			switch (state.current) {
+				case 'connected': {
+					console.log(`Connected to Kick Pusher (${this.channel_name})!`);
+					break;
+				}
+				case 'connecting': {
+					console.log(`Connecting to Kick Pusher (${this.channel_name})...`);
+					break;
+				}
+				case 'failed': {
+					console.log(`Failed to connect to Kick Pusher (${this.channel_name})`);
+					break;
+				}
+				case 'unavailable': {
+					console.log(`Disconnected from Kick Pusher (${this.channel_name})`);
+					break;
+				}
+			}
+			this.public_listeners.connection_state_changed?.(state);
+		});
 	}
 
 	public disconnect() {
@@ -149,8 +169,8 @@ export class KickPusher {
 		this.public_listeners[event_name] = callback_fn;
 	}
 
-	private onSubscriptionSuccess() {
-		console.log(`Connected to Kick Pusher (${this.channel_name})`);
+	private onSubscriptionSuccess(channel: string) {
+		console.log(`Subscribed to Channel on Kick Pusher (${channel})`);
 	}
 
 	private onChatSubscription(data: ChatSubscriptionEvent) {
