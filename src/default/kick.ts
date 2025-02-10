@@ -134,9 +134,8 @@ export class KickPusher {
 			.bind('App\\Events\\SubscriptionEvent', (data: ChatroomsV2Events['SubscriptionEvent']) =>
 				this.onChatSubscription(data),
 			)
-			.bind(
-				'App\\Events\\GiftedSubscriptionsEvent',
-				(data: ChatroomV1Events['GiftedSubscriptionsEvent']) => this.onChatGifted(data),
+			.bind('GiftedSubscriptionsEvent', (data: ChatroomV1Events['GiftedSubscriptionsEvent']) =>
+				this.onChatGifted(data),
 			);
 
 		this.socket.connection.bind('state_change', (state: ConnectionStateEvent) => {
