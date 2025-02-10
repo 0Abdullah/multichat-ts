@@ -11,8 +11,7 @@
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
 	"exports": {
-		".": "./dist/default/index.js",
-		"./worker": "./dist/worker/index.js"
+		".": "./dist/default/index.js"
 	},
 	"scripts": {
 		"build": "tsc",
