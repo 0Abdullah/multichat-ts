@@ -1,6 +1,6 @@
 {
 	"name": "multichat-ts",
-	"version": "0.0.89",
+	"version": "0.0.90",
 	"type": "module",
 	"description": "Receive type-safe realtime events for chat-related messages on multiple platforms (Twitch, Kick)",
 	"repository": {
@@ -10,9 +10,6 @@
 	"homepage": "https://github.com/0Abdullah/multichat-ts",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
-	"exports": {
-		".": "./dist/default/index.js"
-	},
 	"scripts": {
 		"build": "tsc",
 		"prepublishOnly": "pnpm build",
