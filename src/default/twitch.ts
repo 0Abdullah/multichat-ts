@@ -278,7 +278,14 @@ export class TwitchIRC {
 							id: tags['user-id'],
 							username: (tags['display-name'] ?? 'Unknown').toLowerCase(),
 							display_name: tags['display-name'] ?? 'Unknown',
-							roles: {},
+							roles: {
+								admin: tags['user-type'] === 'admin',
+								global_moderator: tags['user-type'] === 'global_mod',
+								staff: tags['user-type'] === 'staff',
+								turbo: tags.turbo === '1',
+								vip: tags.vip === '1',
+								moderator: tags.mod === '1',
+							},
 						},
 					});
 					break;
