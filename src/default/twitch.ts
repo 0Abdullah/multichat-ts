@@ -169,7 +169,7 @@ export class TwitchIRC {
 					break;
 				}
 				case 'PRIVMSG': {
-					const { channel, params, tags } = message;
+					const { channel, params, tags, source } = message;
 					if (!tags || !tags['user-id'] || !tags['id'] || !tags['room-id']) return;
 
 					const text = params[0];
@@ -276,7 +276,7 @@ export class TwitchIRC {
 								}) ?? [],
 							color: tags.color ?? '#FFFFFF',
 							id: tags['user-id'],
-							username: (tags['display-name'] ?? 'Unknown').toLowerCase(),
+							username: source?.user ?? 'Unknown',
 							display_name: tags['display-name'] ?? 'Unknown',
 							roles: {
 								admin: tags['user-type'] === 'admin',
