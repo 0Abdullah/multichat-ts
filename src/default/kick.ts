@@ -196,7 +196,7 @@ export class KickPusher {
 	private onChatMessage(data: ChatroomsV2Events['ChatMessageEvent']) {
 		this.public_listeners.raw_message?.(data);
 		const text = data.content;
-		const emote_matches = [...data.content.matchAll(/\[emote:\d+:[a-zA-Z0-9]*\]/g)];
+		const emote_matches = [...data.content.matchAll(/\[emote:\d+:.+\]/g)];
 
 		const body: BodyComponent[] = [];
 
