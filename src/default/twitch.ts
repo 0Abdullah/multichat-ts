@@ -21,12 +21,18 @@ type EventCallbackFunctions = {
 	delete_message: (data: DeleteMessage) => unknown;
 	event: (event: Event) => unknown;
 	raw_message: (message: IRC_Message) => unknown;
+	connected: () => unknown;
+	auth_error: () => unknown;
 };
 
 type EventNames = keyof EventCallbackFunctions;
 
 export class TwitchIRC {
 	public channel_name?: string;
+	public auth?: { username: string; token: string } | undefined;
+	public bot_name?: string;
+	public bot_token?: string;
+
 	private assets: {
 		external_emotes: EmoteURLsByName;
 		badges: BadgeURLsBySetIDOrSetIDAndVersion;
@@ -45,10 +51,11 @@ export class TwitchIRC {
 	private public_listeners: Partial<EventCallbackFunctions> = {};
 
 	public socket?: WebSocket;
-	public ws?: WebSocket | undefined;
+	public wsCustom?: WebSocket | undefined;
 
-	constructor(ws?: WebSocket) {
-		this.ws = ws;
+	constructor(options: { ws?: WebSocket; auth?: { username: string; token: string } }) {
+		this.wsCustom = options.ws;
+		this.auth = options.auth;
 	}
 
 	public setBadges(badges: BadgeURLsBySetIDOrSetIDAndVersion) {
@@ -67,6 +74,11 @@ export class TwitchIRC {
 		return this.assets.external_emotes;
 	}
 
+	public authenticate(username: string, token: string) {
+		this.bot_name = username;
+		this.bot_token = token;
+	}
+
 	public connect(channel?: { channelName?: string }) {
 		if (channel?.channelName) this.channel_name = channel.channelName;
 		if (!this.channel_name) return console.error('channel_name not specified');
@@ -76,14 +88,24 @@ export class TwitchIRC {
 		this.socket?.close();
 
 		this.socket = new WebSocket('wss://irc-ws.chat.twitch.tv', null, {
-			WebSocket: this.ws,
+			WebSocket: this.wsCustom,
 		});
 		this.socket.onopen = () => this.onOpen();
 		this.socket.onclose = () => this.onClose();
 		this.socket.onmessage = (event) => this.onMessage(event);
 	}
 
+	public send(message: string, replyParentMessageId?: string) {
+		if (this.auth === undefined) return console.error('No Auth Information');
+		if (!this.isConnected()) return console.error('Not Connected');
+
+		this.socket.send(
+			`${replyParentMessageId ? `@reply-parent-msg-id=${replyParentMessageId} ` : ''}PRIVMSG #${this.channel_name} :${message}`,
+		);
+	}
+
 	public disconnect() {
+		this.socket?.send(`Part #${this.channel_name}`);
 		this.socket?.close();
 	}
 
@@ -99,12 +121,18 @@ export class TwitchIRC {
 	}
 
 	private onOpen() {
-		this.send('CAP REQ :twitch.tv/commands twitch.tv/tags');
-		this.send(`PASS ${ANONYMOUS_IRC_PASS}`);
-		this.send(`NICK ${ANONYMOUS_IRC_LOGIN}`);
-		this.send(`JOIN #${this.channel_name}`);
+		this.sendIRC('CAP REQ :twitch.tv/commands twitch.tv/tags');
+		if (this.auth !== undefined) {
+			this.sendIRC(`PASS oauth:${this.auth.token}`);
+			this.sendIRC(`NICK ${this.auth.username}`);
+			this.sendIRC(`JOIN #${this.channel_name}`);
+		} else {
+			this.sendIRC(`PASS ${ANONYMOUS_IRC_PASS}`);
+			this.sendIRC(`NICK ${ANONYMOUS_IRC_LOGIN}`);
+			this.sendIRC(`JOIN #${this.channel_name}`);
+		}
 
-		console.log(`Connected to Twitch IRC as Anonymous (${this.channel_name})`);
+		this.public_listeners.connected?.();
 
 		if (this.ping.interval) clearInterval(this.ping.interval);
 		this.sendPing();
@@ -117,7 +145,7 @@ export class TwitchIRC {
 	}
 
 	private sendPing() {
-		this.send('PING');
+		this.sendIRC('PING');
 		this.ping.lastSentTimestamp = Date.now();
 
 		if (this.ping.timeout) clearTimeout(this.ping.timeout);
@@ -127,10 +155,9 @@ export class TwitchIRC {
 		}, PING_TIMEOUT_MS);
 	}
 
-	private send(irc_message: string) {
-		if (!this.isConnected()) {
-			throw new Error('Not connected');
-		}
+	private sendIRC(irc_message: string) {
+		if (!this.isConnected()) return console.error('Not Connected');
+
 		this.socket?.send(irc_message);
 	}
 
@@ -149,7 +176,26 @@ export class TwitchIRC {
 					break;
 				}
 				case 'PING': {
-					this.send('PONG');
+					this.sendIRC('PONG');
+					break;
+				}
+				case '001': {
+					console.log(
+						`Connected to Twitch IRC as ${this.auth?.username ?? 'Anonymous'} (${this.channel_name})`,
+					);
+
+					this.public_listeners.connected?.();
+					break;
+				}
+				case 'NOTICE': {
+					if (
+						message.params[0] === 'Login authentication failed' ||
+						message.params[0] === 'Improperly formatted auth'
+					) {
+						clearTimeout(this.ping.timeout);
+						this.disconnect();
+						this.public_listeners.auth_error?.();
+					}
 					break;
 				}
 				case 'CLEARCHAT': {
@@ -316,7 +362,7 @@ function parseIRCLine(line: string): IRC_Message {
 	componentIndex++;
 
 	let channel: string = '';
-	if (components[componentIndex]!.startsWith('#')) channel = components[componentIndex]!.slice(1);
+	if (components[componentIndex]?.startsWith('#')) channel = components[componentIndex]!.slice(1);
 	componentIndex++;
 
 	const params: string[] = [];
@@ -429,6 +475,8 @@ const RAW_TAGS = {
 	PING: [],
 
 	PONG: [],
+
+	'001': [],
 
 	PRIVMSG: [
 		'badge-info',
