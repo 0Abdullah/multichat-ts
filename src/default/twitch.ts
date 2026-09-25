@@ -9,6 +9,7 @@ import {
 	type EmoteURLsByName,
 	type BadgeURLsBySetIDOrSetIDAndVersion,
 } from './index.js';
+import { buildMessageBody, runSafely } from './safety.js';
 
 const ANONYMOUS_IRC_PASS = 'SCHMOOPIIE';
 const ANONYMOUS_IRC_LOGIN = 'justinfan1234';
@@ -26,6 +27,8 @@ type EventCallbackFunctions = {
 };
 
 type EventNames = keyof EventCallbackFunctions;
+
+type SocketOptions = NonNullable<ConstructorParameters<typeof WebSocket>[2]>;
 
 export class TwitchIRC {
 	public channel_name?: string;
@@ -50,20 +53,28 @@ export class TwitchIRC {
 
 	private public_listeners: Partial<EventCallbackFunctions> = {};
 
-	public socket?: WebSocket;
-	public wsCustom?: WebSocket | undefined;
+	public socket?: WebSocket | undefined;
+	public wsCustom?: SocketOptions['WebSocket'];
 
-	constructor(options: { ws?: WebSocket; auth?: { username: string; token: string } }) {
+	constructor(
+		options: {
+			ws?: SocketOptions['WebSocket'];
+			auth?: { username: string; token: string };
+		} = {},
+	) {
 		this.wsCustom = options.ws;
 		this.auth = options.auth;
 	}
 
 	public setBadges(badges: BadgeURLsBySetIDOrSetIDAndVersion) {
-		this.assets.badges = { ...badges, ...this.assets.badges };
+		this.assets.badges = { ...this.assets.badges, ...badges };
 	}
 
-	public setExternalEmotes(external_emotes: EmoteURLsByName) {
-		this.assets.external_emotes = { ...external_emotes, ...this.assets.external_emotes };
+	public setExternalEmotes(externalEmotes: EmoteURLsByName) {
+		this.assets.external_emotes = {
+			...this.assets.external_emotes,
+			...externalEmotes,
+		};
 	}
 
 	public getStoredBadges() {
@@ -74,39 +85,96 @@ export class TwitchIRC {
 		return this.assets.external_emotes;
 	}
 
-	public authenticate(username: string, token: string) {
+	public authenticate(username: string, token: string): void {
+		this.auth = { username, token };
 		this.bot_name = username;
 		this.bot_token = token;
 	}
 
-	public connect(channel?: { channelName?: string }) {
-		if (channel?.channelName) this.channel_name = channel.channelName;
-		if (!this.channel_name) return console.error('channel_name not specified');
+	private clearPing(): void {
+		clearInterval(this.ping.interval);
+		clearTimeout(this.ping.timeout);
+		this.ping = {};
+	}
 
-		console.log(`connecting to ${this.channel_name}...`);
+	public connect(channel?: { channelName?: string }): void {
+		if (channel?.channelName) {
+			this.channel_name = channel.channelName;
+		}
 
-		this.socket?.close();
+		if (!this.channel_name) {
+			throw new Error('Twitch channel_name not specified');
+		}
 
-		this.socket = new WebSocket('wss://irc-ws.chat.twitch.tv', null, {
+		this.disconnect();
+
+		const socket = new WebSocket('wss://irc-ws.chat.twitch.tv', null, {
 			WebSocket: this.wsCustom,
 		});
-		this.socket.onopen = () => this.onOpen();
-		this.socket.onclose = () => this.onClose();
-		this.socket.onmessage = (event) => this.onMessage(event);
+
+		this.socket = socket;
+
+		socket.onopen = () => {
+			if (this.socket !== socket) return;
+			runSafely('twitch.open', () => this.onOpen());
+		};
+
+		socket.onclose = () => {
+			if (this.socket !== socket) return;
+			this.clearPing();
+		};
+
+		socket.onerror = () => {
+			if (this.socket !== socket) return;
+
+			console.error('Twitch WebSocket error', {
+				channel: this.channel_name,
+			});
+		};
+
+		socket.onmessage = (event) => {
+			if (this.socket !== socket) return;
+			runSafely('twitch.frame', () => this.onMessage(event));
+		};
 	}
 
-	public send(message: string, replyParentMessageId?: string) {
-		if (this.auth === undefined) return console.error('No Auth Information');
-		if (!this.isConnected()) return console.error('Not Connected');
+	public send(message: string, replyParentMessageId?: string): void {
+		if (!this.auth) {
+			console.error('No Twitch auth information');
+			return;
+		}
 
-		this.socket.send(
-			`${replyParentMessageId ? `@reply-parent-msg-id=${replyParentMessageId} ` : ''}PRIVMSG #${this.channel_name} :${message}`,
-		);
+		const text = message.replace(/[\r\n]/g, ' ');
+
+		if (replyParentMessageId !== undefined && !/^[A-Za-z0-9-]+$/.test(replyParentMessageId)) {
+			throw new Error('Invalid reply parent message ID');
+		}
+
+		const prefix = replyParentMessageId ? `@reply-parent-msg-id=${replyParentMessageId} ` : '';
+
+		this.sendIRC(`${prefix}PRIVMSG #${this.channel_name} :${text}`);
 	}
 
-	public disconnect() {
-		this.socket?.send(`Part #${this.channel_name}`);
-		this.socket?.close();
+	public disconnect(): void {
+		this.clearPing();
+
+		const socket = this.socket;
+		this.socket = undefined;
+
+		if (!socket) return;
+
+		socket.onopen = null;
+		socket.onclose = null;
+		socket.onmessage = null;
+		socket.onerror = null;
+
+		runSafely('twitch.disconnect', () => socket.close());
+	}
+
+	private restartConnection(): void {
+		this.clearPing();
+
+		runSafely('twitch.reconnect', () => this.socket?.reconnect());
 	}
 
 	public on<EventName extends EventNames>(
@@ -120,271 +188,321 @@ export class TwitchIRC {
 		return !!this.socket && this.socket.readyState === WebSocket.OPEN;
 	}
 
-	private onOpen() {
-		this.sendIRC('CAP REQ :twitch.tv/commands twitch.tv/tags');
-		if (this.auth !== undefined) {
-			this.sendIRC(`PASS oauth:${this.auth.token}`);
-			this.sendIRC(`NICK ${this.auth.username}`);
-			this.sendIRC(`JOIN #${this.channel_name}`);
-		} else {
-			this.sendIRC(`PASS ${ANONYMOUS_IRC_PASS}`);
-			this.sendIRC(`NICK ${ANONYMOUS_IRC_LOGIN}`);
-			this.sendIRC(`JOIN #${this.channel_name}`);
+	// private onClose() {
+	// 	clearInterval(this.ping.interval);
+	// 	clearTimeout(this.ping.timeout);
+	// }
+
+	private onOpen(): void {
+		this.clearPing();
+
+		const token = this.auth?.token.replace(/^oauth:/, '');
+
+		const commands = [
+			'CAP REQ :twitch.tv/commands twitch.tv/tags',
+			this.auth ? `PASS oauth:${token}` : `PASS ${ANONYMOUS_IRC_PASS}`,
+			`NICK ${this.auth?.username ?? ANONYMOUS_IRC_LOGIN}`,
+			`JOIN #${this.channel_name}`,
+		];
+
+		for (const command of commands) {
+			if (!this.sendIRC(command)) return;
 		}
 
-		this.public_listeners.connected?.();
-
-		if (this.ping.interval) clearInterval(this.ping.interval);
 		this.sendPing();
-		this.ping.interval = setInterval(() => this.sendPing(), PING_INTERVAL_MS);
+
+		if (!this.isConnected()) return;
+
+		this.ping.interval = setInterval(() => {
+			runSafely('twitch.ping', () => this.sendPing());
+		}, PING_INTERVAL_MS);
 	}
 
-	private onClose() {
-		clearInterval(this.ping.interval);
-		clearTimeout(this.ping.timeout);
-	}
+	private sendPing(): void {
+		if (this.ping.lastSentTimestamp !== undefined) return;
+		if (!this.sendIRC('PING :multichat')) return;
 
-	private sendPing() {
-		this.sendIRC('PING');
 		this.ping.lastSentTimestamp = Date.now();
 
-		if (this.ping.timeout) clearTimeout(this.ping.timeout);
 		this.ping.timeout = setTimeout(() => {
-			console.error('PING Timeout, reconnecting...');
-			this.connect();
+			console.error('Twitch PING timeout');
+			this.restartConnection();
 		}, PING_TIMEOUT_MS);
 	}
 
-	private sendIRC(irc_message: string) {
-		if (!this.isConnected()) return console.error('Not Connected');
+	private sendIRC(message: string): boolean {
+		if (!this.isConnected()) return false;
 
-		this.socket?.send(irc_message);
-	}
-
-	private onMessage(event: MessageEvent) {
-		if (!event.data) return;
-		const lines = (event.data as string).trim().split('\r\n');
-		const messages = lines.map(parseIRCLine);
-		messages.forEach((message) => {
-			this.public_listeners.raw_message?.(message);
-			switch (message.command) {
-				case 'PONG': {
-					if (!this.ping.lastSentTimestamp) return console.error('got PONG without sending PING');
-					clearInterval(this.ping.timeout);
-					this.latency = Date.now() - this.ping.lastSentTimestamp;
-					this.ping.lastSentTimestamp = undefined;
-					break;
-				}
-				case 'PING': {
-					this.sendIRC('PONG');
-					break;
-				}
-				case '001': {
-					console.log(
-						`Connected to Twitch IRC as ${this.auth?.username ?? 'Anonymous'} (${this.channel_name})`,
-					);
-
-					this.public_listeners.connected?.();
-					break;
-				}
-				case 'NOTICE': {
-					if (
-						message.params[0] === 'Login authentication failed' ||
-						message.params[0] === 'Improperly formatted auth'
-					) {
-						clearTimeout(this.ping.timeout);
-						this.disconnect();
-						this.public_listeners.auth_error?.();
-					}
-					break;
-				}
-				case 'CLEARCHAT': {
-					const { channel, tags } = message;
-					if (!tags) return;
-
-					this.public_listeners.clear_messages?.({
-						channel: {
-							name: channel,
-							room_id: tags['room-id'] ?? 'unknown',
-						},
-						timestamp_sent: Number(tags['tmi-sent-ts']),
-						timeout_duration_seconds: tags['ban-duration']
-							? Number(tags['ban-duration'])
-							: undefined,
-					});
-					break;
-				}
-				case 'PRIVMSG': {
-					const { channel, params, tags, source } = message;
-					if (!tags || !tags['user-id'] || !tags['id'] || !tags['room-id']) return;
-
-					const text = params[0];
-					if (!text) return;
-
-					const body: BodyComponent[] = [];
-
-					tags.emotes?.split('/').forEach((raw_emote_string) => {
-						const [emote_id, raw_emote_positions_string] = raw_emote_string.split(':');
-						if (!emote_id || !raw_emote_positions_string) return;
-
-						const raw_emote_positions = raw_emote_positions_string.split(',');
-						raw_emote_positions.forEach((raw_emote_position) => {
-							const [emote_start, emote_end] = raw_emote_position.split('-');
-							if (!emote_start || !emote_end) return;
-
-							body.push({
-								type: 'emote',
-								start_inclusive: +emote_start,
-								end_exclusive: +emote_end + 1,
-								url: `https://static-cdn.jtvnw.net/emoticons/v2/${emote_id}/default/dark/1.0`,
-							});
-						});
-					});
-
-					body.sort((a, b) => a.start_inclusive - b.start_inclusive);
-
-					const old_body_length = body.length;
-
-					if (old_body_length > 0) {
-						body.forEach((segment, index) => {
-							const previous_segment = body[index - 1];
-
-							const text_start_inclusive =
-								previous_segment?.end_exclusive !== undefined
-									? previous_segment.end_exclusive + 1
-									: 0;
-							const text_end_exclusive = Math.max(0, segment.start_inclusive);
-
-							if (text_end_exclusive - text_start_inclusive > 0) {
-								body.push({
-									type: 'text',
-									text: text.slice(text_start_inclusive, text_end_exclusive),
-									start_inclusive: text_start_inclusive,
-									end_exclusive: text_end_exclusive,
-								});
-							}
-							if (index === old_body_length - 1 && segment.end_exclusive < text.length - 1) {
-								body.push({
-									type: 'text',
-									text: text.slice(segment.end_exclusive),
-									start_inclusive: segment.end_exclusive,
-									end_exclusive: text.length,
-								});
-							}
-						});
-					} else {
-						body.push({
-							type: 'text',
-							text,
-							start_inclusive: 0,
-							end_exclusive: text.length,
-						});
-					}
-
-					body.sort((a, b) => a.start_inclusive - b.start_inclusive);
-
-					const badge_info: {
-						[set_id: string]: string;
-					} = {};
-					tags['badge-info']?.split(',').forEach((badge) => {
-						const [set_id, info] = badge.split('/');
-						if (!set_id || !info) return;
-
-						badge_info[set_id] = info;
-					});
-
-					this.public_listeners.message?.({
-						body: body,
-						channel: {
-							room_id: tags['room-id'],
-							name: channel,
-						},
-						id: tags.id,
-						raw_text: text,
-						timestamp_sent: Number(tags['tmi-sent-ts']),
-						user: {
-							badges:
-								tags.badges?.split(',').flatMap((badge) => {
-									const [set_id, version] = badge.split('/');
-									if (!set_id || !version) return [];
-
-									const storedBadge = this.assets.badges[set_id];
-									if (!storedBadge) return [];
-
-									const url = typeof storedBadge === 'object' ? storedBadge[version] : storedBadge;
-									if (!url) return [];
-
-									return {
-										info: badge_info[set_id],
-										set_id,
-										url,
-									};
-								}) ?? [],
-							color: tags.color ?? '#FFFFFF',
-							id: tags['user-id'],
-							username: source?.user ?? 'Unknown',
-							display_name: tags['display-name'] ?? 'Unknown',
-							roles: {
-								admin: tags['user-type'] === 'admin',
-								global_moderator: tags['user-type'] === 'global_mod',
-								staff: tags['user-type'] === 'staff',
-								turbo: tags.turbo === '1',
-								vip: tags.vip === '1',
-								moderator: tags.mod === '1',
-							},
-						},
-					});
-					break;
-				}
-			}
-		});
-	}
-}
-
-function parseIRCLine(line: string): IRC_Message {
-	const components = line.split(' ');
-	let componentIndex = 0;
-
-	let raw_tags_component: string | undefined;
-	let source: RawSource | undefined;
-
-	if (components[componentIndex]!.startsWith('@')) {
-		raw_tags_component = components[componentIndex]!.slice(1);
-		componentIndex++;
-	}
-
-	if (components[componentIndex]!.startsWith(':')) {
-		source = parseSource(components[componentIndex]!.slice(1));
-		componentIndex++;
-	}
-
-	const command = components[componentIndex]! as CommandType;
-	componentIndex++;
-
-	let channel: string = '';
-	if (components[componentIndex]?.startsWith('#')) channel = components[componentIndex]!.slice(1);
-	componentIndex++;
-
-	const params: string[] = [];
-	while (components[componentIndex] !== undefined) {
-		const param = components[componentIndex]!;
-		if (param.startsWith(':')) {
-			params.push(components.slice(componentIndex).join(' ').slice(1));
-			componentIndex = -1;
-		} else {
-			params.push(param);
-			componentIndex++;
+		try {
+			this.socket.send(message);
+			return true;
+		} catch (error) {
+			console.error('Twitch send failed', error);
+			this.restartConnection();
+			return false;
 		}
 	}
 
-	// TODO: handle message actions like "/me"
-	if (params[0])
-		params[0] = String.raw`${params[0]}`.replaceAll(
-			/.+ACTION (.*).+/g,
-			(_original, group) => group,
-		);
+	private onMessage(event: MessageEvent): void {
+		if (typeof event.data !== 'string') {
+			console.warn('Ignoring non-text Twitch WebSocket frame', JSON.stringify(event));
+			return;
+		}
 
-	const tags = raw_tags_component ? parseTags(raw_tags_component, command) : undefined;
+		const socket = this.socket;
+
+		for (const line of event.data.split('\r\n')) {
+			if (!line) continue;
+
+			if (this.socket !== socket || !this.isConnected()) break;
+
+			runSafely('twitch.irc_line', () => {
+				const message = parseIRCLine(line);
+
+				if (!message) {
+					console.warn('Ignoring malformed Twitch IRC line', JSON.stringify(message));
+					return;
+				}
+
+				this.handleIRCMessage(message);
+			});
+		}
+	}
+
+	private handleIRCMessage(message: IRC_Message): void {
+		runSafely('twitch.raw_message', () => this.public_listeners.raw_message?.(message));
+
+		switch (message.command) {
+			case 'PONG': {
+				const sentAt = this.ping.lastSentTimestamp;
+
+				if (sentAt === undefined) break;
+
+				clearTimeout(this.ping.timeout);
+				this.latency = Date.now() - sentAt;
+				this.ping.lastSentTimestamp = undefined;
+				break;
+			}
+			case 'PING': {
+				const token = message.params.at(-1);
+
+				this.sendIRC(token === undefined ? 'PONG' : `PONG :${token}`);
+				break;
+			}
+			case '001': {
+				console.log(`Connected to Twitch IRC (${this.channel_name})`);
+
+				runSafely('twitch.connected', () => this.public_listeners.connected?.());
+				break;
+			}
+			case 'RECONNECT': {
+				this.restartConnection();
+				break;
+			}
+			case 'NOTICE': {
+				const text = message.params.at(-1);
+
+				if (text === 'Login authentication failed' || text === 'Improperly formatted auth') {
+					this.disconnect();
+
+					runSafely('twitch.auth_error', () => this.public_listeners.auth_error?.());
+				}
+
+				break;
+			}
+			case 'CLEARCHAT': {
+				const { channel, tags } = message;
+				if (!tags) return;
+				const data = {
+					channel: {
+						name: channel,
+						room_id: tags['room-id'] ?? 'unknown',
+					},
+					timestamp_sent: Number(tags['tmi-sent-ts']),
+					timeout_duration_seconds: tags['ban-duration'] ? Number(tags['ban-duration']) : undefined,
+				};
+				runSafely('twitch.clear_messages', () => {
+					this.public_listeners.clear_messages?.(data);
+				});
+				break;
+			}
+			case 'PRIVMSG': {
+				const { channel, params, tags, source } = message;
+				if (!tags || !tags['user-id'] || !tags['id'] || !tags['room-id']) return;
+
+				const rawText = params[0];
+				if (!rawText) return;
+
+				const actionPrefix = '\u0001ACTION ';
+				const isAction = rawText.startsWith(actionPrefix) && rawText.endsWith('\u0001');
+
+				const text = isAction ? rawText.slice(actionPrefix.length, -1) : rawText;
+
+				const offset = isAction ? actionPrefix.length : 0;
+
+				const boundaries = [0];
+				let utf16Offset = 0;
+
+				for (const character of rawText) {
+					utf16Offset += character.length;
+					boundaries.push(utf16Offset);
+				}
+
+				const emotes: BodyComponent[] = [];
+
+				for (const encoded of tags['emotes']?.split('/') ?? []) {
+					const colon = encoded.indexOf(':');
+					if (colon === -1) continue;
+
+					const id = encoded.slice(0, colon);
+					if (!id) continue;
+
+					for (const range of encoded.slice(colon + 1).split(',')) {
+						const match = /^(\d+)-(\d+)$/.exec(range);
+						if (!match) continue;
+
+						const first = Number(match[1]);
+						const last = Number(match[2]);
+
+						if (last < first) continue;
+
+						const rawStart = boundaries[first];
+						const rawEnd = boundaries[last + 1];
+
+						if (rawStart === undefined || rawEnd === undefined) continue;
+
+						emotes.push({
+							type: 'emote',
+							start_inclusive: rawStart - offset,
+							end_exclusive: rawEnd - offset,
+							url:
+								'https://static-cdn.jtvnw.net/emoticons/v2/' +
+								`${encodeURIComponent(id)}/default/dark/1.0`,
+						});
+					}
+				}
+
+				const body = buildMessageBody(text, emotes);
+
+				const badge_info: {
+					[set_id: string]: string;
+				} = {};
+				tags['badge-info']?.split(',').forEach((badge) => {
+					const [set_id, info] = badge.split('/');
+					if (!set_id || !info) return;
+
+					badge_info[set_id] = info;
+				});
+
+				const timestamp = Number(tags['tmi-sent-ts']);
+
+				const data = {
+					body: body,
+					channel: {
+						room_id: tags['room-id'],
+						name: channel,
+					},
+					id: tags['id'],
+					raw_text: text,
+					timestamp_sent: Number.isFinite(timestamp) ? timestamp : Date.now(),
+					user: {
+						badges:
+							tags['badges']?.split(',').flatMap((badge) => {
+								const [set_id, version] = badge.split('/');
+								if (!set_id || !version) return [];
+
+								const storedBadge = this.assets.badges[set_id];
+								if (!storedBadge) return [];
+
+								const url = typeof storedBadge === 'object' ? storedBadge[version] : storedBadge;
+								if (typeof url !== 'string' || !url) return [];
+
+								return {
+									info: badge_info[set_id],
+									set_id,
+									url,
+								};
+							}) ?? [],
+						color: tags['color'] ?? '#FFFFFF',
+						id: tags['user-id'],
+						username: source?.user ?? 'Unknown',
+						display_name: tags['display-name'] ?? 'Unknown',
+						roles: {
+							admin: tags['user-type'] === 'admin',
+							global_moderator: tags['user-type'] === 'global_mod',
+							staff: tags['user-type'] === 'staff',
+							turbo: tags['turbo'] === '1',
+							vip: tags['vip'] === '1',
+							moderator: tags['mod'] === '1',
+						},
+					},
+				};
+
+				runSafely('twitch.message', () => {
+					this.public_listeners.message?.(data);
+				});
+				break;
+			}
+		}
+	}
+}
+
+export function parseIRCLine(line: string): IRC_Message | undefined {
+	let rest = line.replace(/[\r\n]+$/, '').trimStart();
+
+	if (!rest) return undefined;
+
+	const takeToken = (): string => {
+		const space = rest.indexOf(' ');
+
+		if (space === -1) {
+			const token = rest;
+			rest = '';
+			return token;
+		}
+
+		const token = rest.slice(0, space);
+		rest = rest.slice(space + 1).trimStart();
+		return token;
+	};
+
+	let tags: IRC_Message['tags'];
+	let source: RawSource | undefined;
+
+	if (rest.startsWith('@')) {
+		tags = parseTags(takeToken().slice(1));
+
+		if (!rest) return undefined;
+	}
+
+	if (rest.startsWith(':')) {
+		source = parseSource(takeToken().slice(1));
+
+		if (!rest) return undefined;
+	}
+
+	const command = takeToken();
+
+	if (!/^(?:[A-Za-z]+|\d{3})$/.test(command)) {
+		return undefined;
+	}
+
+	const params: string[] = [];
+
+	while (rest) {
+		if (rest.startsWith(':')) {
+			params.push(rest.slice(1));
+			break;
+		}
+
+		params.push(takeToken());
+	}
+
+	let channel = '';
+
+	if (params[0]?.startsWith('#')) {
+		channel = params.shift()!.slice(1);
+	}
 
 	return {
 		channel,
@@ -395,201 +513,66 @@ function parseIRCLine(line: string): IRC_Message {
 	};
 }
 
-function parseTags(component: string, command: CommandType): AllRawTags {
-	// const tags = Object.fromEntries(RAW_TAGS[command].map((key) => [key, undefined])) as AllRawTags
-	const tags = {} as AllRawTags;
+function parseTags(component: string): Record<string, string | undefined> {
+	const tags: Record<string, string | undefined> = Object.create(null);
 
-	component.split(';').forEach((raw_tag) => {
-		const [key, value] = raw_tag.split('=') as [AllRawTagsKeys, string];
-		// console.log([key, value])
-		if (RAW_TAGS[command].findIndex((el) => el === key) === -1)
-			console.warn(`[${command}] Unknown Tag: ${raw_tag}`);
-		// if (value.length)
-		tags[key] = value;
-	});
+	for (const rawTag of component.split(';')) {
+		const equals = rawTag.indexOf('=');
+
+		const key = equals === -1 ? rawTag : rawTag.slice(0, equals);
+		const value = equals === -1 ? '' : rawTag.slice(equals + 1);
+
+		if (!key) continue;
+
+		tags[key] = value.replace(/\\(.)/g, (_, escaped: string) => {
+			switch (escaped) {
+				case 's':
+					return ' ';
+				case ':':
+					return ';';
+				case 'r':
+					return '\r';
+				case 'n':
+					return '\n';
+				case '\\':
+					return '\\';
+				default:
+					return escaped;
+			}
+		});
+	}
 
 	return tags;
 }
 
 function parseSource(component: string): RawSource {
-	let user: string | undefined = undefined;
-	let host: string | undefined = component;
-	let nick: string | undefined = undefined;
+	const bang = component.indexOf('!');
 
-	if (component.includes('!')) [nick, host] = component.split('!');
-	if (host?.includes('@')) [user, host] = host.split('@');
+	if (bang === -1) {
+		return { host: component || 'unknown' };
+	}
+
+	const nick = component.slice(0, bang);
+	const remainder = component.slice(bang + 1);
+	const at = remainder.indexOf('@');
 
 	return {
-		host: host ?? 'unknown',
 		nick,
-		user,
+		user: at === -1 ? remainder : remainder.slice(0, at),
+		host: at === -1 ? 'unknown' : remainder.slice(at + 1),
 	};
 }
 
-type IRC_Message = {
-	[C in CommandType]: {
-		channel: string;
-		command: C;
-		params: string[];
-		source: RawSource | undefined;
-		tags: SpecificRawTags<C> | undefined;
-	};
-}[CommandType];
-
-type RAW_TAGS = typeof RAW_TAGS;
-type CommandType = keyof RAW_TAGS;
-type AllRawTagsKeys = RAW_TAGS[CommandType][number];
-type AllRawTags = Record<AllRawTagsKeys, string | undefined>;
-type SpecificRawTags<Command extends CommandType> = Record<
-	RAW_TAGS[Command][number],
-	string | undefined
->;
+export type IRC_Message = {
+	channel: string;
+	command: string;
+	params: string[];
+	source: RawSource | undefined;
+	tags: Record<string, string | undefined> | undefined;
+};
 
 type RawSource = {
 	host: string;
 	nick?: string | undefined;
 	user?: string | undefined;
 };
-
-const RAW_TAGS = {
-	CLEARCHAT: ['ban-duration', 'room-id', 'target-user-id', 'tmi-sent-ts'],
-	CLEARMSG: ['login', 'room-id', 'target-msg-id', 'tmi-sent-ts'],
-
-	GLOBALUSERSTATE: [
-		'badge-info',
-		'badges',
-		'color',
-		'display-name',
-		'emote-sets',
-		'turbo',
-		'user-id',
-		'user-type',
-	],
-
-	HOSTTARGET: [],
-
-	NOTICE: ['msg-id', 'target-user-id'],
-
-	PART: [],
-
-	PING: [],
-
-	PONG: [],
-
-	'001': [],
-
-	PRIVMSG: [
-		'badge-info',
-		'badges',
-		'bits',
-		'color',
-		'display-name',
-		'emotes',
-		'emote-only',
-		'id',
-		'mod',
-		'custom-reward-id',
-		'reply-thread-parent-display-name',
-		'reply-thread-parent-user-id',
-		'pinned-chat-paid-amount',
-		'pinned-chat-paid-currency',
-		'pinned-chat-paid-exponent',
-		'pinned-chat-paid-level',
-		'pinned-chat-paid-is-system-message',
-		'reply-parent-msg-id',
-		'reply-parent-user-id',
-		'reply-parent-user-login',
-		'reply-parent-display-name',
-		'reply-parent-msg-body',
-		'reply-thread-parent-msg-id',
-		'reply-thread-parent-user-login',
-		'room-id',
-		'subscriber',
-		'tmi-sent-ts',
-		'turbo',
-		'user-id',
-		'user-type',
-		'vip',
-		...[
-			// undocumented
-			'client-nonce',
-			'first-msg',
-			'flags',
-			'returning-chatter',
-		],
-	],
-	RECONNECT: [],
-	ROOMSTATE: ['emote-only', 'followers-only', 'r9k', 'room-id', 'slow', 'subs-only'],
-	USERNOTICE: [
-		'badge-info',
-		'badges',
-		'color',
-		'display-name',
-		'emotes',
-		'id',
-		'login',
-		'mod',
-		'msg-id',
-		'room-id',
-		'subscriber',
-		'system-msg',
-		'tmi-sent-ts',
-		'turbo',
-		'user-id',
-		'user-type',
-		'vip',
-		'flags',
-		...[
-			// Only subscription/raid related notices
-			'msg-param-cumulative-months',
-			'msg-param-displayName',
-			'msg-param-login',
-			'msg-param-multimonth-duration',
-			'msg-param-multimonth-tenure',
-			'msg-param-was-gifted=false',
-			'msg-param-months',
-			'msg-param-promo-gift-total',
-			'msg-param-promo-name',
-			'msg-param-recipient-display-name',
-			'msg-param-recipient-id',
-			'msg-param-recipient-user-name',
-			'msg-param-sender-login',
-			'msg-param-sender-name',
-			'msg-param-should-share-streak',
-			'msg-param-streak-months',
-			'msg-param-sub-plan',
-			'msg-param-sub-plan-name',
-			'msg-param-viewerCount',
-			'msg-param-ritual-name',
-			'msg-param-threshold',
-			'msg-param-gift-months',
-			'msg-param-was-gifted',
-			'msg-param-community-gift-id',
-			'msg-param-mass-gift-count',
-			'msg-param-origin-id',
-		],
-	],
-	USERSTATE: [
-		'badge-info',
-		'badges',
-		'color',
-		'display-name',
-		'emote-sets',
-		'id',
-		'mod',
-		'subscriber',
-		'turbo',
-		'user-type',
-	],
-	WHISPER: [
-		'badges',
-		'color',
-		'display-name',
-		'emotes',
-		'message-id',
-		'thread-id',
-		'turbo',
-		'user-id',
-		'user-type',
-	],
-} as const;

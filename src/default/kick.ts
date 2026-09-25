@@ -6,8 +6,15 @@ import {
 	type EmoteURLsByName,
 	type Message,
 } from './index.js';
+import { buildMessageBody, isFiniteNumber, isRecord, runSafely } from './safety.js';
 
-type ConnectionState = 'initialized' | 'connecting' | 'connected' | 'unavailable' | 'failed';
+type ConnectionState =
+	| 'initialized'
+	| 'connecting'
+	| 'connected'
+	| 'unavailable'
+	| 'failed'
+	| 'disconnected';
 type ConnectionStateEvent = { previous: ConnectionState; current: ConnectionState };
 
 type EventCallbackFunctions = {
@@ -50,7 +57,7 @@ export class KickPusher {
 
 	private public_listeners: Partial<EventCallbackFunctions> = {};
 
-	public socket?: Pusher;
+	public socket?: Pusher | undefined;
 	public isConnected = false;
 
 	public setBadges(badges: BadgeURLsByNameOrCount) {
@@ -69,109 +76,143 @@ export class KickPusher {
 		return this.assets.external_emotes;
 	}
 
-	public async connect(
-		channel?: { channelName?: string },
-		get_channel: (channelName: string) => Promise<GetChannelResponse | undefined> = async (
-			channelName,
-		) => {
-			const res = await fetch(`https://kick.com/api/v2/channels/${channelName}`, {
-				headers: {
-					accept: 'aplication/json',
-					'user-agent':
-						'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-				},
-			});
-			const json = await res.json();
-			return json as GetChannelResponse | undefined;
-		},
-	) {
-		if (channel?.channelName) this.channel_name = channel.channelName;
-		if (!this.channel_name) return console.error('channel_name not specified');
+	private connectionVersion = 0;
 
-		console.log(`connecting to ${this.channel_name}...`);
+	private closeSocket() {
+		const socket = this.socket;
 
-		const channel_response = await get_channel(this.channel_name);
+		this.socket = undefined;
+		this.isConnected = false;
 
-		if (!channel_response) return console.error('Failed to connect to Kick.com chat');
+		if (!socket) return;
 
-		channel_response.subscriber_badges.forEach((subscriber_badge) => {
-			this.assets.badges['subscriber'] = {
-				...(this.assets.badges['subscriber'] ?? {}),
-				[subscriber_badge.months]: subscriber_badge.badge_image.src,
-			};
-		});
+		runSafely('kick.cleanup.connection', () => socket.connection.unbind_all());
 
-		this.disconnect();
+		runSafely('kick.cleanup.listeners', () => socket.unbind_all());
 
-		this.socket = new Pusher(this.kick_pusher_key, {
-			cluster: 'us2',
-		});
-		/*
-		| 'App\\Events\\ChatMessageEvent'
-		| 'App\\Events\\ChatroomClearEvent'
-		| 'App\\Events\\ChatroomUpdatedEvent'
-		| 'App\\Events\\GiftedSubscriptionsEvent'
-		| 'App\\Events\\MessageDeletedEvent'
-		| 'App\\Events\\PinnedMessageCreatedEvent'
-		| 'App\\Events\\PinnedMessageDeletedEvent'
-		| 'App\\Events\\PollDeleteEvent'
-		| 'App\\Events\\PollUpdateEvent'
-		| 'App\\Events\\StreamHostEvent'
-		| 'App\\Events\\SubscriptionEvent'
-		| 'App\\Events\\UserBannedEvent'
-		| 'App\\Events\\UserUnbannedEvent'
-		*/
-		this.socket.subscribe(`chatroom_${channel_response.chatroom.id}`);
-		this.socket.subscribe(`chatrooms.${channel_response.chatroom.id}.v2`);
-
-		this.socket
-			.bind('pusher:subscription_succeeded', () =>
-				this.onSubscriptionSuccess('pusher:subscription_succeeded'),
-			)
-			.bind('App\\Events\\ChatMessageEvent', (data: ChatroomsV2Events['ChatMessageEvent']) =>
-				this.onChatMessage(data),
-			)
-			.bind('App\\Events\\SubscriptionEvent', (data: ChatroomsV2Events['SubscriptionEvent']) =>
-				this.onChatSubscription(data),
-			)
-			.bind('GiftedSubscriptionsEvent', (data: ChatroomV1Events['GiftedSubscriptionsEvent']) =>
-				this.onChatGifted(data),
-			);
-
-		this.socket.connection.bind('state_change', (state: ConnectionStateEvent) => {
-			switch (state.current) {
-				case 'connected': {
-					this.isConnected = true;
-					console.log(`Connected to Kick Pusher (${this.channel_name})!`);
-					break;
-				}
-				case 'connecting': {
-					this.isConnected = false;
-					console.log(`Connecting to Kick Pusher (${this.channel_name})...`);
-					break;
-				}
-				case 'failed': {
-					this.isConnected = false;
-					console.log(`Failed to connect to Kick Pusher (${this.channel_name})`);
-					break;
-				}
-				case 'unavailable': {
-					this.isConnected = false;
-					console.log(`Disconnected from Kick Pusher (${this.channel_name})`);
-					break;
-				}
-				default: {
-					this.isConnected = false;
-					break;
-				}
-			}
-			this.public_listeners.connection_state_changed?.(state);
-		});
+		runSafely('kick.cleanup.disconnect', () => socket.disconnect());
 	}
 
-	public disconnect() {
-		this.socket?.disconnect();
-		this.socket?.unbind_all();
+	public async connect(
+		channel?: { channelName?: string },
+		getChannel: (
+			channelName: string,
+		) => Promise<GetChannelResponse | undefined> = defaultGetChannel,
+	): Promise<void> {
+		if (channel?.channelName) {
+			this.channel_name = channel.channelName;
+		}
+
+		const channelName = this.channel_name;
+
+		if (!channelName) {
+			throw new Error('Kick channel_name not specified');
+		}
+
+		const version = ++this.connectionVersion;
+
+		this.closeSocket();
+
+		const response = await getChannel(channelName);
+
+		// ignore a lookup superseded by connect() or disconnect().
+		if (version !== this.connectionVersion) return;
+
+		if (!response || !isFiniteNumber(response.chatroom?.id) || response.chatroom.id <= 0) {
+			throw new Error(`Invalid Kick channel response: ${channelName}`);
+		}
+
+		const subscriberBadges: Record<string, string> = {};
+
+		if (Array.isArray(response.subscriber_badges)) {
+			for (const badge of response.subscriber_badges) {
+				if (badge && isFiniteNumber(badge.months) && typeof badge.badge_image?.src === 'string') {
+					subscriberBadges[badge.months] = badge.badge_image.src;
+				}
+			}
+		}
+
+		// Replace channel-specific badges rather than retaining old ones.
+		this.assets.badges['subscriber'] = subscriberBadges;
+
+		try {
+			const socket = new Pusher(this.kick_pusher_key, {
+				cluster: 'us2',
+			});
+
+			this.socket = socket;
+
+			const bind = (event: string, handler: (data: unknown) => unknown) => {
+				socket.bind(event, (data: unknown) => {
+					if (this.socket !== socket) return;
+
+					runSafely(`kick.${event}`, () => handler(data));
+				});
+			};
+
+			bind('App\\Events\\ChatMessageEvent', (data) => this.onChatMessage(data));
+
+			bind('App\\Events\\SubscriptionEvent', (data) => this.onChatSubscription(data));
+
+			bind('GiftedSubscriptionsEvent', (data) => this.onChatGifted(data));
+
+			socket.connection.bind('state_change', (state: ConnectionStateEvent) => {
+				if (this.socket !== socket) return;
+
+				runSafely('kick.state_change', () => {
+					if (!state || typeof state.current !== 'string') {
+						throw new Error('Invalid Pusher state-change payload');
+					}
+
+					this.isConnected = state.current === 'connected';
+
+					runSafely('kick.connection_state_changed', () =>
+						this.public_listeners.connection_state_changed?.(state),
+					);
+				});
+			});
+
+			socket.connection.bind('error', (error: unknown) => {
+				if (this.socket !== socket) return;
+
+				console.error('Kick Pusher connection error', {
+					channelName,
+					error,
+				});
+			});
+
+			const names = [`chatroom_${response.chatroom.id}`, `chatrooms.${response.chatroom.id}.v2`];
+
+			for (const name of names) {
+				const subscription = socket.subscribe(name);
+
+				subscription.bind('pusher:subscription_succeeded', () => {
+					if (this.socket !== socket) return;
+
+					runSafely('kick.subscription_succeeded', () => this.onSubscriptionSuccess(name));
+				});
+
+				subscription.bind('pusher:subscription_error', (error: unknown) => {
+					if (this.socket !== socket) return;
+
+					console.error('Kick Pusher subscription error', {
+						channelName,
+						subscription: name,
+						error,
+					});
+				});
+			}
+
+			this.isConnected = socket.connection.state === 'connected';
+		} catch (error) {
+			this.closeSocket();
+			throw error;
+		}
+	}
+
+	public disconnect(): void {
+		++this.connectionVersion;
+		this.closeSocket();
 	}
 
 	public on<EventName extends EventNames>(
@@ -185,74 +226,56 @@ export class KickPusher {
 		console.log(`Subscribed to Channel on Kick Pusher (${channel})`);
 	}
 
-	private onChatSubscription(data: ChatroomsV2Events['SubscriptionEvent']) {
-		this.public_listeners.subscription?.(data);
+	private onChatSubscription(data: unknown) {
+		if (!isSubscription(data)) {
+			console.warn('Ignoring invalid Kick subscription payload', JSON.stringify(data));
+			return;
+		}
+
+		runSafely('kick.subscription', () => {
+			this.public_listeners.subscription?.(data);
+		});
 	}
 
-	private onChatGifted(data: ChatroomV1Events['GiftedSubscriptionsEvent']) {
-		this.public_listeners.gifted?.(data);
+	private onChatGifted(data: unknown) {
+		if (!isGifted(data)) {
+			console.warn('Ignoring invalid Kick gifted payload', JSON.stringify(data));
+			return;
+		}
+		runSafely('kick.gifted', () => {
+			this.public_listeners.gifted?.(data);
+		});
 	}
 
-	private onChatMessage(data: ChatroomsV2Events['ChatMessageEvent']) {
-		this.public_listeners.raw_message?.(data);
-		const text = data.content;
-		const emote_matches = [...data.content.matchAll(/\[emote:\d+:.+\]/g)];
+	private onChatMessage(data: unknown) {
+		if (!isChatMessage(data)) {
+			console.warn('Ignoring invalid Kick chat payload: ', JSON.stringify(data));
+			return;
+		}
 
-		const body: BodyComponent[] = [];
-
-		emote_matches.forEach((match) => {
-			const emote_string = match[0];
-			const emote_parts = emote_string.slice(1, emote_string.length - 1).split(':');
-			const emote_id = emote_parts[1];
-			if (!emote_id) return;
-
-			body.push({
-				type: 'emote',
-				start_inclusive: match.index,
-				end_exclusive: match.index + emote_string.length,
-				url: `https://files.kick.com/emotes/${emote_id}/fullsize`,
-			});
+		runSafely('kick.raw_message', () => {
+			this.public_listeners.raw_message?.(data);
 		});
 
-		body.sort((a, b) => a.start_inclusive - b.start_inclusive);
+		const text = data.content;
+		const emotes: BodyComponent[] = [];
 
-		const old_body_length = body.length;
+		for (const match of text.matchAll(/\[emote:(\d+):[^\]]+\]/g)) {
+			const id = match[1];
+			const start = match.index;
 
-		if (old_body_length > 0) {
-			body.forEach((segment, index) => {
-				const previous_segment = body[index - 1];
+			if (!id || start === undefined) continue;
 
-				const text_start_inclusive =
-					previous_segment?.end_exclusive !== undefined ? previous_segment.end_exclusive + 1 : 0;
-				const text_end_exclusive = Math.max(0, segment.start_inclusive);
-
-				if (text_end_exclusive - text_start_inclusive > 0) {
-					body.push({
-						type: 'text',
-						text: text.slice(text_start_inclusive, text_end_exclusive),
-						start_inclusive: text_start_inclusive,
-						end_exclusive: text_end_exclusive,
-					});
-				}
-				if (index === old_body_length - 1 && segment.end_exclusive < text.length - 1) {
-					body.push({
-						type: 'text',
-						text: text.slice(segment.end_exclusive),
-						start_inclusive: segment.end_exclusive,
-						end_exclusive: text.length,
-					});
-				}
-			});
-		} else {
-			body.push({
-				type: 'text',
-				text,
-				start_inclusive: 0,
-				end_exclusive: text.length,
+			emotes.push({
+				type: 'emote',
+				start_inclusive: start,
+				end_exclusive: start + match[0].length,
+				url: `https://files.kick.com/emotes/${id}/fullsize`,
 			});
 		}
 
-		body.sort((a, b) => a.start_inclusive - b.start_inclusive);
+		const body = buildMessageBody(text, emotes);
+
 		const message: Message = {
 			id: data.id,
 			user: {
@@ -268,11 +291,19 @@ export class KickPusher {
 					const badge_count = badge.count;
 
 					if (typeof badge_url_or_counts === 'string') badge_url = badge_url_or_counts;
-					else if (typeof badge_url_or_counts === 'object' && badge_count !== undefined) {
-						const badge_entry_by_count = Object.entries(badge_url_or_counts)
-							.sort(([a_min_count], [b_min_count]) => Number(a_min_count) - Number(b_min_count))
-							.find(([min_count]) => badge_count >= Number(min_count));
-						if (badge_entry_by_count) badge_url = badge_entry_by_count[1];
+					else if (
+						badge_url_or_counts !== null &&
+						typeof badge_url_or_counts === 'object' &&
+						isFiniteNumber(badge_count)
+					) {
+						const entry = Object.entries(badge_url_or_counts)
+							.filter(
+								([minimum, url]) => Number.isFinite(Number(minimum)) && typeof url === 'string',
+							)
+							.sort(([a], [b]) => Number(b) - Number(a))
+							.find(([minimum]) => badge_count >= Number(minimum));
+
+						badge_url = entry?.[1];
 					}
 
 					if (!badge_url) return [];
@@ -292,15 +323,102 @@ export class KickPusher {
 			timestamp_sent: Date.parse(data.created_at),
 		};
 
-		if (data.type === 'celebration' && data.metadata?.celebration) {
+		const metadata: unknown = data.metadata;
+		const celebration = isRecord(metadata) ? metadata['celebration'] : undefined;
+
+		if (
+			data.type === 'celebration' &&
+			isRecord(celebration) &&
+			typeof celebration['id'] === 'string' &&
+			isFiniteNumber(celebration['total_months']) &&
+			celebration['total_months'] > 0 &&
+			typeof celebration['created_at'] === 'string' &&
+			Number.isFinite(Date.parse(celebration['created_at']))
+		) {
 			message.resubscription = {
-				id: data.metadata.celebration.id,
-				months: data.metadata.celebration.total_months,
-				subscribed_since_timestamp: data.metadata.celebration.created_at,
+				id: celebration['id'],
+				months: celebration['total_months'],
+				subscribed_since_timestamp: celebration['created_at'],
 			};
 		}
-		this.public_listeners.message?.(message);
+		runSafely('kick.message', () => {
+			this.public_listeners.message?.(message);
+		});
 	}
+}
+
+async function defaultGetChannel(channelName: string): Promise<GetChannelResponse | undefined> {
+	const url = 'https://kick.com/api/v2/channels/' + encodeURIComponent(channelName);
+
+	const response = await fetch(url, {
+		headers: {
+			accept: 'application/json',
+		},
+		signal: AbortSignal.timeout(15_000),
+	});
+
+	if (!response.ok) {
+		throw new Error(`Kick channel lookup HTTP ${response.status}`);
+	}
+
+	return (await response.json()) as GetChannelResponse;
+}
+
+function isChatMessage(value: unknown): value is ChatMessageEvent {
+	if (!isRecord(value)) return false;
+
+	const sender = value['sender'];
+
+	if (
+		typeof value['id'] !== 'string' ||
+		!isFiniteNumber(value['chatroom_id']) ||
+		typeof value['content'] !== 'string' ||
+		typeof value['created_at'] !== 'string' ||
+		!Number.isFinite(Date.parse(value['created_at'])) ||
+		!['message', 'celebration', 'reply'].includes(String(value['type'])) ||
+		!isRecord(sender) ||
+		!isFiniteNumber(sender['id']) ||
+		typeof sender['username'] !== 'string' ||
+		(sender['slug'] !== undefined && typeof sender['slug'] !== 'string')
+	) {
+		return false;
+	}
+
+	const identity = sender['identity'];
+
+	return (
+		isRecord(identity) &&
+		typeof identity['color'] === 'string' &&
+		Array.isArray(identity['badges']) &&
+		identity['badges'].every(
+			(badge) =>
+				isRecord(badge) &&
+				typeof badge['type'] === 'string' &&
+				typeof badge['text'] === 'string' &&
+				(badge['count'] === undefined || isFiniteNumber(badge['count'])),
+		)
+	);
+}
+
+function isSubscription(value: unknown): value is ChatroomsV2Events['SubscriptionEvent'] {
+	return (
+		isRecord(value) &&
+		isFiniteNumber(value['chatroom_id']) &&
+		typeof value['username'] === 'string' &&
+		isFiniteNumber(value['months']) &&
+		value['months'] > 0
+	);
+}
+
+function isGifted(value: unknown): value is ChatroomV1Events['GiftedSubscriptionsEvent'] {
+	return (
+		isRecord(value) &&
+		isFiniteNumber(value['chatroom_id']) &&
+		typeof value['gifter_username'] === 'string' &&
+		isFiniteNumber(value['gifter_total']) &&
+		Array.isArray(value['gifted_usernames']) &&
+		value['gifted_usernames'].every((name) => typeof name === 'string')
+	);
 }
 
 export interface GetChannelResponse {
